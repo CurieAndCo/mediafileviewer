@@ -1,5 +1,7 @@
 // Background service worker for File Type Detector Extension
 // Author: mia
+const ALLOWED_DATASET_HOST = 'www.justice.gov';
+const ALLOWED_DATASET_PATH_PREFIX = '/epstein/files';
 
 // Service worker for Manifest V3
 chrome.runtime.onInstalled.addListener(() => {
@@ -8,9 +10,21 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // Handle fetch requests from popup (for chrome-extension:// URLs or CORS issues)
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (sender.id !== chrome.runtime.id) {
+    return false;
+  }
+
   if (request.action === 'fetch') {
     (async () => {
       try {
+        const targetUrl = new URL(request.url);
+        if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+          throw new Error('Blocked unsupported URL protocol');
+        }
+        if (targetUrl.hostname !== ALLOWED_DATASET_HOST || !targetUrl.pathname.startsWith(ALLOWED_DATASET_PATH_PREFIX)) {
+          throw new Error('Blocked URL outside allowed dataset scope');
+        }
+
         const fetchOptions = {
           method: request.method || 'GET',
           redirect: 'follow'
@@ -20,7 +34,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           fetchOptions.headers = request.headers;
         }
 
-        const response = await fetch(request.url, fetchOptions);
+        const response = await fetch(targetUrl.toString(), fetchOptions);
         
         const headers = {};
         response.headers.forEach((value, key) => {
@@ -67,7 +81,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   
   if (request.action === 'ping') {
     sendResponse({ status: 'ok' });
+    return false;
   }
   
-  return true;
+  return false;
 });

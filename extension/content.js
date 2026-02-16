@@ -1,13 +1,35 @@
 // Content script for File Type Detector Extension
-// Author: mia
+// Author: @helloitsmia.tech
 // This script runs in the page context to fetch files that may be behind age verification
+const ALLOWED_DATASET_HOST = 'www.justice.gov';
+const ALLOWED_DATASET_PATH_PREFIX = '/epstein/files';
 
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (sender.id !== chrome.runtime.id) {
+    return false;
+  }
+
   if (request.action === 'fetchFile') {
+    let targetUrl;
+    try {
+      targetUrl = new URL(request.url);
+      if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+        sendResponse({ success: false, error: 'Blocked unsupported URL protocol' });
+        return false;
+      }
+      if (targetUrl.hostname !== ALLOWED_DATASET_HOST || !targetUrl.pathname.startsWith(ALLOWED_DATASET_PATH_PREFIX)) {
+        sendResponse({ success: false, error: 'Blocked URL outside allowed dataset scope' });
+        return false;
+      }
+    } catch (e) {
+      sendResponse({ success: false, error: 'Invalid URL' });
+      return false;
+    }
+
     // Fetch the file from the current page context
     // This bypasses age verification since we're in the authenticated page
-    fetch(request.url, {
+    fetch(targetUrl.toString(), {
       method: request.method || 'GET',
       headers: request.headers || {},
       redirect: 'follow',

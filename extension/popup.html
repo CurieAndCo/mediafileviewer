@@ -32,6 +32,14 @@
         </div>
         <div class="mime-type" id="mimeType">-</div>
         <div class="detection-method" id="detectionMethod"></div>
+
+        <!-- MOV file warning message -->
+        <div id="movWarning" class="mov-warning" style="display: none;">
+          <div class="warning-text">
+            <strong>This file type (.mov) cannot be displayed in a browser tab.</strong>
+            <p>You can use the video preview tool below OR download the file by using the open in new tab button.</p>
+          </div>
+        </div>
         
         <div class="technical-details" id="technicalDetails">
           <div class="detail-row">
@@ -45,6 +53,35 @@
         </div>
       </div>
 
+      <!-- Video Preview Section -->
+      <div class="video-preview-section" id="videoPreviewSection" style="display: none;">
+        <div class="video-preview-header">
+          <h3>Video Preview</h3>
+          <small>If the link is missing, paste the current url</small>
+
+          <button id="closeVideoPreview" class="close-btn" title="Close preview">×</button>
+        </div>
+        <div class="video-url-input-container">
+          <input 
+            type="text" 
+            id="videoUrlInput" 
+            class="video-url-input" 
+            placeholder="Paste video URL here (e.g., .mov, .mp4, .webm, .3gp)"
+          />
+          <button id="loadVideoBtn" class="btn-secondary">
+            <span class="btn-text">Load Video</span>
+            <span class="spinner" id="videoLoadSpinner"></span>
+          </button>
+        </div>
+        <div class="video-player-container" id="videoPlayerContainer" style="display: none;">
+          <video id="videoPlayer" controls preload="metadata" style="width: 100%; max-height: 400px; background: #000;">
+            Your browser does not support the video tag.
+          </video>
+          <div class="video-info" id="videoInfo"></div>
+        </div>
+        <div class="video-error" id="videoError" style="display: none;"></div>
+      </div>
+
       <button id="openBtn" class="btn-primary" disabled>
         Open in New Tab with Correct Type
       </button>
@@ -53,42 +90,6 @@
         <span class="btn-text">Scan for Metadata</span>
         <span class="spinner" id="metadataScanSpinner"></span>
       </button>
-
-      <!-- MOV file warning message -->
-      <div id="movWarning" class="mov-warning" style="display: none;">
-        <div class="warning-icon">⚠️</div>
-        <div class="warning-text">
-          <strong>This file type (.mov) cannot be displayed in the DOJ website's previewer.</strong>
-          <p>You need to download the file, or you can paste the URL below to watch it directly.</p>
-        </div>
-      </div>
-    </div>
-
-    <!-- Video Preview Section -->
-    <div class="video-preview-section" id="videoPreviewSection" style="display: none;">
-      <div class="video-preview-header">
-        <h3>Video Preview</h3>
-        <button id="closeVideoPreview" class="close-btn" title="Close preview">×</button>
-      </div>
-      <div class="video-url-input-container">
-        <input 
-          type="text" 
-          id="videoUrlInput" 
-          class="video-url-input" 
-          placeholder="Paste video URL here (e.g., .mov, .mp4, .webm, .3gp)"
-        />
-        <button id="loadVideoBtn" class="btn-secondary">
-          <span class="btn-text">Load Video</span>
-          <span class="spinner" id="videoLoadSpinner"></span>
-        </button>
-      </div>
-      <div class="video-player-container" id="videoPlayerContainer" style="display: none;">
-        <video id="videoPlayer" controls preload="metadata" style="width: 100%; max-height: 400px; background: #000;">
-          Your browser does not support the video tag.
-        </video>
-        <div class="video-info" id="videoInfo"></div>
-      </div>
-      <div class="video-error" id="videoError" style="display: none;"></div>
     </div>
 
     <div class="metadata-section" id="metadataSection" style="display: none;">
@@ -103,8 +104,8 @@
     <div class="message-area" id="messageArea"></div>
   </div>
 
-  <!-- FFmpeg.wasm for MOV file conversion -->
-  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/umd/ffmpeg.min.js"></script>
+  <!-- FFmpeg.wasm for MOV file conversion (local to satisfy extension CSP) -->
+  <script src="vendor/ffmpeg/ffmpeg.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

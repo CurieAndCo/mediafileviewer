@@ -1,5 +1,5 @@
 // File Type Detector Extension
-// Author: mia
+// Author: @helloitsmia.tech
 
 // Magic byte signatures for file type detection
 const MAGIC_BYTES = {
@@ -40,8 +40,12 @@ const GENERIC_MIME_TYPES = [
 let detectedMimeType = null;
 let detectionMethod = null;
 let fileUrl = null;
+let detectedExtensionHint = null; // Extension verified during alternative URL probing
 let statusCode = null;
 let fileSize = null;
+const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
+const ALLOWED_DATASET_HOST = 'www.justice.gov';
+const ALLOWED_DATASET_PATH_PREFIX = '/epstein/files';
 
 // DOM elements
 const detectBtn = document.getElementById('detectBtn');
@@ -89,12 +93,32 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadCurrentTabUrl();
 });
 
+function getSafeHttpUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) return null;
+    if (parsed.hostname !== ALLOWED_DATASET_HOST) return null;
+    if (!parsed.pathname.startsWith(ALLOWED_DATASET_PATH_PREFIX)) return null;
+    return parsed;
+  } catch (e) {
+    return null;
+  }
+}
+
 // Load and display current tab URL
 async function loadCurrentTabUrl() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab && tab.url) {
-      fileUrl = extractRealUrl(tab.url);
+      const extractedUrl = extractRealUrl(tab.url);
+      const safeUrl = getSafeHttpUrl(extractedUrl);
+      if (!safeUrl) {
+        currentUrlText.textContent = 'This tool only works on justice.gov/epstein/files';
+        currentUrlText.title = extractedUrl;
+        detectBtn.disabled = true;
+        return;
+      }
+      fileUrl = safeUrl.toString();
       // Display shortened URL
       try {
         const urlObj = new URL(fileUrl);
@@ -128,16 +152,19 @@ function extractRealUrl(url) {
       // Try to decode and use the embedded URL
       try {
         const decoded = decodeURIComponent(match[1]);
-        // Check if it's a valid URL
-        new URL(decoded);
-        console.log('Extracted real URL from chrome-extension://:', decoded);
-        return decoded;
+        const safeDecoded = getSafeHttpUrl(decoded);
+        if (safeDecoded) {
+          console.log('Extracted real URL from chrome-extension://:', safeDecoded.toString());
+          return safeDecoded.toString();
+        }
       } catch (e) {
         // If decoding fails, try using it as-is
         try {
-          new URL(match[1]);
-          console.log('Using URL from chrome-extension:// path:', match[1]);
-          return match[1];
+          const safePathUrl = getSafeHttpUrl(match[1]);
+          if (safePathUrl) {
+            console.log('Using URL from chrome-extension:// path:', safePathUrl.toString());
+            return safePathUrl.toString();
+          }
         } catch (e2) {
           // Keep original if extraction fails
           console.log('Could not extract URL, using original');
@@ -159,19 +186,18 @@ async function handleDetect() {
     }
     
     let url = extractRealUrl(tab.url);
-    fileUrl = url; // Store for opening
-    
-    // Validate URL format
-    try {
-      new URL(url);
-    } catch (e) {
-      showMessage('Invalid URL format', 'error');
+    const safeUrl = getSafeHttpUrl(url);
+    if (!safeUrl) {
+      showMessage('This tool is restricted to https://www.justice.gov/epstein/files', 'error');
       return;
     }
+    url = safeUrl.toString();
+    fileUrl = url; // Store for opening
 
   // Reset state
   detectedMimeType = null;
   detectionMethod = null;
+  detectedExtensionHint = null;
   statusCode = null;
   fileSize = null;
   
@@ -439,6 +465,16 @@ async function detectFileType(url, tabId) {
           
           let foundValidFile = false;
           const baseUrl = url.replace(/\.pdf$/i, '');
+          const candidateResults = [];
+          const expectedMimeByExtension = {
+            mp4: 'video/mp4',
+            m4a: 'audio/mp4',
+            m4v: 'video/x-m4v',
+            mov: 'video/quicktime',
+            '3gp': 'video/3gpp',
+            avi: 'video/x-msvideo',
+            webm: 'video/webm'
+          };
           
           // Try each alternative extension
           for (const ext of ALTERNATIVE_EXTENSIONS) {
@@ -471,18 +507,26 @@ async function detectFileType(url, tabId) {
                   
                   // Check if it's a valid media file (not PDF or error page)
                   if (testDetected && testDetected !== 'application/pdf') {
-                    console.log(`✓ Found valid file type: ${testDetected} with extension .${ext}`);
-                    detectedMimeType = testDetected;
-                    detectionMethod = `Magic bytes (verified via .${ext} URL - server serves different content by extension)`;
-                    fileUrl = testUrl; // Update URL for opening
-                    foundValidFile = true;
-                    
-                    // Update file size if available
-                    if (testResponseData.headers && testResponseData.headers['content-length']) {
-                      fileSize = formatFileSize(parseInt(testResponseData.headers['content-length'], 10));
-                      console.log('Updated file size:', fileSize);
+                    const expectedMime = expectedMimeByExtension[ext] || null;
+                    let score = 10; // Base score for a valid non-PDF detection
+                    if (expectedMime && expectedMime === testDetected) {
+                      score += 100; // Strongly prefer extension/mime agreement
                     }
-                    break; // Found valid file, stop trying
+                    if (testDetected.startsWith('video/') || testDetected.startsWith('audio/')) {
+                      score += 15;
+                    }
+                    if (testDetected === 'video/x-msvideo') {
+                      score += 15; // Slightly favor AVI when detected explicitly
+                    }
+
+                    candidateResults.push({
+                      ext,
+                      url: testUrl,
+                      mime: testDetected,
+                      score,
+                      contentLength: testResponseData.headers?.['content-length'] || null
+                    });
+                    console.log(`✓ Candidate found: .${ext} => ${testDetected} (score ${score})`);
                   } else if (testDetected === 'application/pdf') {
                     console.log(`.${ext} also returned PDF, continuing search...`);
                     continue; // Try next extension
@@ -507,16 +551,35 @@ async function detectFileType(url, tabId) {
               continue; // Try next extension
             }
           }
+
+          if (candidateResults.length > 0) {
+            candidateResults.sort((a, b) => b.score - a.score);
+            const bestCandidate = candidateResults[0];
+            console.log('Best extension candidate selected:', bestCandidate);
+
+            detectedMimeType = bestCandidate.mime;
+            detectionMethod = `Magic bytes (verified via .${bestCandidate.ext} URL - server serves different content by extension)`;
+            fileUrl = bestCandidate.url; // Update URL for opening
+            detectedExtensionHint = bestCandidate.ext;
+            foundValidFile = true;
+
+            if (bestCandidate.contentLength) {
+              fileSize = formatFileSize(parseInt(bestCandidate.contentLength, 10));
+              console.log('Updated file size:', fileSize);
+            }
+          }
           
           // If we didn't find a valid file, keep PDF detection
           if (!foundValidFile) {
             console.log('No valid alternative extension found, keeping PDF detection');
             detectedMimeType = detected;
             detectionMethod = 'Magic bytes (tried alternative extensions but none returned valid file)';
+            detectedExtensionHint = null;
           }
         } else if (detected) {
           detectedMimeType = detected;
           detectionMethod = 'Magic bytes';
+          detectedExtensionHint = null;
         } else {
           // Fallback to Content-Type header if magic bytes don't match
           if (contentType) {
@@ -527,9 +590,11 @@ async function detectFileType(url, tabId) {
             detectionMethod = isGeneric 
               ? 'Content-Type header (generic, magic bytes not detected)' 
               : 'Content-Type header (magic bytes not detected)';
+            detectedExtensionHint = null;
           } else {
             detectedMimeType = 'application/octet-stream';
             detectionMethod = 'Unknown (no Content-Type, magic bytes not detected)';
+            detectedExtensionHint = null;
           }
         }
       } else {
@@ -601,90 +666,58 @@ function detectMagicBytes(arrayBuffer) {
     console.log('Total bytes received:', bytes.length);
   }
   
-  // Special handling for MP4/M4A: check for "ftyp" at multiple possible offsets
-  // MP4 and M4A files use the same container format (ISO Base Media)
-  // They typically start with a 4-byte size, then "ftyp"
-  // But some variants might have different box structures
-  const ftypBytes = [0x66, 0x74, 0x79, 0x70]; // "ftyp"
-  
-  // Check at offset 4 (standard MP4/M4A)
-  if (bytes.length >= 8) {
-    let mp4Match = true;
-    for (let i = 0; i < 4; i++) {
-      if (bytes[4 + i] !== ftypBytes[i]) {
-        mp4Match = false;
-        break;
+  // Special handling for AVI: RIFF container with AVI/AVIX brand
+  // Layout: bytes 0-3 = "RIFF", bytes 8-11 = "AVI " or "AVIX"
+  if (bytes.length >= 12) {
+    const hasRiff =
+      bytes[0] === 0x52 && // R
+      bytes[1] === 0x49 && // I
+      bytes[2] === 0x46 && // F
+      bytes[3] === 0x46;   // F
+
+    if (hasRiff) {
+      const riffType = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]);
+      if (riffType === 'AVI ' || riffType === 'AVIX') {
+        console.log('AVI detected via RIFF container, type:', riffType);
+        return 'video/x-msvideo';
       }
     }
-        if (mp4Match) {
-          // Check the brand after "ftyp" to distinguish MP4 from M4A/MOV/M4V/3GP
-          // M4A typically has "M4A " or "mp41" brand
-          // MOV typically has "qt  " brand
-          // M4V typically has "M4V " brand
-          // 3GP typically has "3gp" brand
-          // MP4 typically has "isom", "mp41", "mp42", etc.
-          if (bytes.length >= 12) {
-            const brandBytes = Array.from(bytes.slice(8, 12));
-            const brand = String.fromCharCode(...brandBytes.map(b => b > 32 && b < 127 ? b : 32)).trim();
-            console.log('MP4/M4A/MOV/M4V/3GP detected via ftyp, brand:', brand);
-            
-            // M4A files often have "M4A " brand
-            if (brand.includes('M4A') || brand.includes('m4a')) {
-              return 'audio/mp4'; // M4A
-            }
-            // M4V files often have "M4V " brand
-            if (brand.includes('M4V') || brand.includes('m4v')) {
-              return 'video/x-m4v'; // M4V
-            }
-            // MOV files often have "qt  " brand (with spaces)
-            if (brand.includes('qt') || brand === 'qt  ') {
-              return 'video/quicktime'; // MOV
-            }
-            // 3GP files often have "3gp" brand
-            if (brand.includes('3gp') || brand.includes('3GP')) {
-              return 'video/3gpp'; // 3GP
-            }
-          }
-          console.log('MP4 detected via ftyp at offset 4');
-          return 'video/mp4';
-        }
   }
-  
-  // Also check if "ftyp" appears anywhere in the first 32 bytes (some MP4/M4A variants)
-  if (bytes.length >= 8) {
-    for (let offset = 0; offset <= Math.min(28, bytes.length - 4); offset++) {
-      let match = true;
-      for (let i = 0; i < 4; i++) {
-        if (bytes[offset + i] !== ftypBytes[i]) {
-          match = false;
-          break;
-        }
-      }
-        if (match) {
-          // Check brand if available
-          if (bytes.length >= offset + 12) {
-            const brandBytes = Array.from(bytes.slice(offset + 8, offset + 12));
-            const brand = String.fromCharCode(...brandBytes.map(b => b > 32 && b < 127 ? b : 32)).trim();
-            if (brand.includes('M4A') || brand.includes('m4a')) {
-              console.log(`M4A detected via ftyp at offset ${offset}`);
-              return 'audio/mp4';
-            }
-            if (brand.includes('M4V') || brand.includes('m4v')) {
-              console.log(`M4V detected via ftyp at offset ${offset}`);
-              return 'video/x-m4v';
-            }
-            if (brand.includes('qt') || brand === 'qt  ') {
-              console.log(`MOV detected via ftyp at offset ${offset}`);
-              return 'video/quicktime';
-            }
-            if (brand.includes('3gp') || brand.includes('3GP')) {
-              console.log(`3GP detected via ftyp at offset ${offset}`);
-              return 'video/3gpp';
-            }
-          }
-          console.log(`MP4 detected via ftyp at offset ${offset}`);
-          return 'video/mp4';
-        }
+
+  // Special handling for ISO BMFF family (MP4/MOV/M4A/M4V/3GP)
+  // Require a valid first box: [size][ftyp][major_brand]
+  if (bytes.length >= 12) {
+    const firstBoxSize =
+      (bytes[0] << 24) |
+      (bytes[1] << 16) |
+      (bytes[2] << 8) |
+      bytes[3];
+    const hasFtypAtOffset4 =
+      bytes[4] === 0x66 && // f
+      bytes[5] === 0x74 && // t
+      bytes[6] === 0x79 && // y
+      bytes[7] === 0x70;   // p
+
+    const plausibleFtypSize = firstBoxSize === 1 || (firstBoxSize >= 8 && firstBoxSize <= 4096);
+    if (hasFtypAtOffset4 && plausibleFtypSize) {
+      const majorBrand = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]);
+      const brand = majorBrand.trim();
+      const brandLower = brand.toLowerCase();
+      console.log('ISO BMFF detected via ftyp, major brand:', majorBrand);
+
+      if (brandLower === 'm4a') return 'audio/mp4';
+      if (brandLower === 'm4v') return 'video/x-m4v';
+      if (brandLower === 'qt') return 'video/quicktime';
+      if (brandLower.startsWith('3gp')) return 'video/3gpp';
+
+      const mp4Brands = new Set([
+        'isom', 'iso2', 'iso3', 'iso4', 'iso5', 'iso6',
+        'mp41', 'mp42', 'avc1', 'dash', 'msnv', 'f4v', 'f4p', 'f4a', 'f4b'
+      ]);
+      if (mp4Brands.has(brandLower)) return 'video/mp4';
+
+      // If the structure is valid but brand is unknown, treat as generic MP4 container.
+      return 'video/mp4';
     }
   }
   
@@ -723,12 +756,17 @@ function displayResults() {
   openBtn.disabled = false;
   scanMetadataBtn.disabled = false; // Enable metadata scanning
   
-  // Show MOV warning for .mov files specifically
-  const extension = MIME_TO_EXTENSION[detectedMimeType];
-  if (extension === 'mov' || detectedMimeType === 'video/quicktime') {
+  // Show MOV warning and warning icon for .mov files specifically
+  const extension = getPreferredOutputExtension();
+  const isMovType = extension === 'mov';
+  if (isMovType) {
     movWarning.style.display = 'flex';
+    checkmark.textContent = '⚠';
+    checkmark.className = 'warning-checkmark';
   } else {
     movWarning.style.display = 'none';
+    checkmark.textContent = '✓';
+    checkmark.className = 'success-checkmark';
   }
   
   // Show video preview section for all video/audio types
@@ -740,7 +778,7 @@ function displayResults() {
   if (videoMimeTypes.includes(detectedMimeType)) {
     videoPreviewSection.style.display = 'block';
     // Pre-fill the URL input with the current file URL
-    if (fileUrl) {
+    if (fileUrl && extension) {
       const correctedUrl = replaceFileExtension(fileUrl, extension);
       videoUrlInput.value = correctedUrl;
     }
@@ -782,10 +820,26 @@ const ALTERNATIVE_EXTENSIONS = [
   'aac'
 ];
 
+function getPreferredOutputExtension() {
+  const mimeExtension = MIME_TO_EXTENSION[detectedMimeType] || null;
+  if (detectedExtensionHint) {
+    if (mimeExtension && detectedExtensionHint !== mimeExtension) {
+      console.log(
+        `Extension hint mismatch detected (hint: .${detectedExtensionHint}, mime: .${mimeExtension}). Using verified hint.`
+      );
+    }
+    return detectedExtensionHint;
+  }
+  return mimeExtension;
+}
+
 // Replace file extension in URL
 function replaceFileExtension(url, newExtension) {
   try {
     const urlObj = new URL(url);
+    if (!ALLOWED_PROTOCOLS.has(urlObj.protocol)) {
+      return url;
+    }
     const pathname = urlObj.pathname;
     
     // Find the last dot in the pathname
@@ -830,6 +884,12 @@ async function handleScanMetadata() {
       showMessage('Could not determine file URL', 'error');
       return;
     }
+    const safeScanUrl = getSafeHttpUrl(urlToScan);
+    if (!safeScanUrl) {
+      showMessage('Metadata scan is restricted to https://www.justice.gov/epstein/files', 'error');
+      return;
+    }
+    urlToScan = safeScanUrl.toString();
 
     setMetadataLoading(true);
     hideMessage();
@@ -997,9 +1057,8 @@ function parseQuickTimeMetadata(bytes) {
     // Read atom type (4 bytes)
     const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
     
-    // Check for metadata atoms - expand search to more atom types
-    if (type === 'moov' || type === 'udta' || type === 'meta' || type === 'ilst' || type === 'trak' || 
-        type === 'mdat' || type === 'free' || type === 'skip' || type === 'wide') {
+    // Only recurse into metadata/container atoms (not media payload like mdat)
+    if (type === 'moov' || type === 'udta' || type === 'meta' || type === 'ilst' || type === 'trak') {
       // Parse nested atoms
       const nested = parseQuickTimeAtom(bytes, offset + 8, offset + size, metadata);
       if (nested) Object.assign(metadata, nested);
@@ -1068,15 +1127,6 @@ function parseQuickTimeMetadata(bytes) {
   if (gpsMatch && gpsMatch.latitude !== undefined) {
     console.log('Found GPS coordinates in byte search:', gpsMatch);
     gpsCandidates.push(gpsMatch);
-  } else if (gpsMatch && gpsMatch.raw) {
-    console.log('Found GPS-like string in byte search:', gpsMatch.raw);
-    // Try to parse the raw string
-    const parsed = parseGPSAtom(bytes, 0, bytes.length); // Pass full context
-    if (parsed && parsed.latitude !== undefined) {
-      gpsCandidates.push(parsed);
-    } else {
-      gpsCandidates.push(gpsMatch);
-    }
   }
   
   // Last resort: search for any text that looks like coordinates
@@ -1104,9 +1154,6 @@ function parseQuickTimeMetadata(bytes) {
         }
       }
       
-      if (gpsCandidates.length === 0) {
-        gpsCandidates.push({ raw: textSearch });
-      }
     }
   }
   
@@ -1365,16 +1412,6 @@ function parseGPSAtom(bytes, start, end) {
       }
     }
     
-    // If we have a string that looks like GPS data but couldn't parse it, return it as raw
-    // This includes DMS format that we might have missed
-    if (gpsString.trim().length > 0) {
-      // Check if it contains degree symbols or looks like coordinates
-      if (gpsString.includes('°') || gpsString.includes("'") || gpsString.match(/[NS]/i) || gpsString.match(/[EW]/i)) {
-        console.log('Found GPS-like string but couldn\'t parse:', gpsString.trim());
-        return { raw: gpsString.trim() };
-      }
-    }
-    
     return null;
   } catch (e) {
     console.error('Error parsing GPS atom:', e);
@@ -1494,10 +1531,24 @@ function parseStringAtom(bytes, start, end) {
       }
     }
     
-    return str.trim() || null;
+    return sanitizeMetadataText(str);
   } catch (e) {
     return null;
   }
+}
+
+function sanitizeMetadataText(value) {
+  if (!value) return null;
+  const cleaned = value.replace(/\s+/g, ' ').trim();
+  if (cleaned.length < 2 || cleaned.length > 120) return null;
+  
+  // Metadata text should be mostly readable ASCII and include some alphanumeric content.
+  const allowedChars = (cleaned.match(/[A-Za-z0-9\s:;.,_\/()+\-#&'"]/g) || []).length;
+  const readableRatio = allowedChars / cleaned.length;
+  const alnumCount = (cleaned.match(/[A-Za-z0-9]/g) || []).length;
+  
+  if (readableRatio < 0.9 || alnumCount < 3) return null;
+  return cleaned;
 }
 
 // Parse JPEG EXIF metadata (basic)
@@ -1584,15 +1635,8 @@ function displayMetadata(metadata) {
     if (metadata.gps.format) {
       html += `<small style="color: #666;">Format: ${metadata.gps.format}</small><br>`;
     }
-    html += `<a href="${mapsUrl}" target="_blank" style="color: #667eea; text-decoration: none;">View on Google Maps</a>`;
+    html += `<a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" style="color: #667eea; text-decoration: none;">View on Google Maps</a>`;
     html += `</div>`;
-    html += '</div>';
-  } else if (metadata.gps && metadata.gps.raw && metadata.gps.raw.length > 10) {
-    // Show raw GPS string only if it looks substantial
-    hasAnyMetadata = true;
-    html += '<div class="metadata-item">';
-    html += '<div class="metadata-label">📍 Location (GPS - Raw)</div>';
-    html += `<div class="metadata-value" style="color: #666; font-size: 12px;">${escapeHtml(metadata.gps.raw)}</div>`;
     html += '</div>';
   }
   
@@ -1678,8 +1722,8 @@ async function handleOpen() {
   hideMessage();
 
   try {
-    // Get the correct file extension for the detected MIME type
-    const extension = MIME_TO_EXTENSION[detectedMimeType];
+    // Get the preferred extension (verified hint wins over mime-derived extension)
+    const extension = getPreferredOutputExtension();
     
     if (!extension) {
       showMessage('Unknown file extension for MIME type: ' + detectedMimeType, 'error');
@@ -1692,8 +1736,13 @@ async function handleOpen() {
     const correctedUrl = replaceFileExtension(fileUrl, extension);
     console.log('Opening URL with corrected extension:', correctedUrl);
     
+    const safeOpenUrl = getSafeHttpUrl(correctedUrl);
+    if (!safeOpenUrl) {
+      throw new Error('Blocked non-http(s) URL');
+    }
+    
     // Open the corrected URL in a new tab
-    chrome.tabs.create({ url: correctedUrl });
+    chrome.tabs.create({ url: safeOpenUrl.toString() });
     
     showMessage('Opening file with correct extension in new tab!', 'success');
     
@@ -1710,7 +1759,12 @@ async function handleOpen() {
 async function waitForFFmpeg(maxWait = 5000) {
   const startTime = Date.now();
   while (Date.now() - startTime < maxWait) {
-    if (window.FFmpeg || (typeof FFmpeg !== 'undefined')) {
+    if (
+      window.FFmpegWASM ||
+      window.FFmpeg ||
+      (typeof FFmpegWASM !== 'undefined') ||
+      (typeof FFmpeg !== 'undefined')
+    ) {
       return true;
     }
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -1720,20 +1774,19 @@ async function waitForFFmpeg(maxWait = 5000) {
 
 // Load and preview video from URL
 async function handleLoadVideo() {
-  const url = videoUrlInput.value.trim();
+  let url = videoUrlInput.value.trim();
   
   if (!url) {
     showMessage('Please enter a video URL', 'error');
     return;
   }
 
-  // Validate URL
-  try {
-    new URL(url);
-  } catch (e) {
-    showMessage('Invalid URL. Please enter a valid URL.', 'error');
+  const safeUrl = getSafeHttpUrl(url);
+  if (!safeUrl) {
+    showMessage('Video preview is restricted to https://www.justice.gov/epstein/files', 'error');
     return;
   }
+  url = safeUrl.toString();
 
   // Set loading state
   loadVideoBtn.disabled = true;
@@ -1808,42 +1861,53 @@ async function handleLoadVideo() {
         videoError.textContent = 'FFmpeg library not loaded. MOV files may not play in Chrome. Please refresh the extension or download the file to view it.';
         videoError.style.display = 'block';
       } else {
+        const maxSafeConvertSize = 60 * 1024 * 1024; // 60MB
+        if (bytes.length > maxSafeConvertSize) {
+          console.warn('MOV too large for reliable in-popup FFmpeg conversion:', bytes.length);
+          const blob = new Blob([bytes], { type: mimeType });
+          blobUrl = URL.createObjectURL(blob);
+          convertedType = `${mimeType} (original - conversion skipped due to file size)`;
+          videoError.textContent = `File is ${formatFileSize(bytes.length)}. In-browser FFmpeg conversion may fail due to memory limits, so the original file is loaded instead.`;
+          videoError.style.display = 'block';
+        } else {
         showMessage('Converting MOV file for browser playback... This may take a moment.', 'success');
         
         try {
           // Initialize FFmpeg - check different ways it might be exposed
-          const FFmpegClass = window.FFmpeg?.FFmpeg || window.FFmpeg || (typeof FFmpeg !== 'undefined' ? FFmpeg.FFmpeg || FFmpeg : null);
+          const FFmpegClass =
+            window.FFmpegWASM?.FFmpeg ||
+            window.FFmpeg?.FFmpeg ||
+            window.FFmpeg ||
+            (typeof FFmpegWASM !== 'undefined' ? FFmpegWASM.FFmpeg || FFmpegWASM : null) ||
+            (typeof FFmpeg !== 'undefined' ? FFmpeg.FFmpeg || FFmpeg : null);
           if (!FFmpegClass) {
             throw new Error('FFmpeg class not found');
           }
           
           const ffmpeg = new FFmpegClass();
         
-        // Configure FFmpeg to use CDN for core files
-        ffmpeg.setLogging(true);
+        // Set up logging/progress callbacks (supported in @ffmpeg/ffmpeg v0.12.x)
+        if (typeof ffmpeg.on === 'function') {
+          ffmpeg.on('log', ({ message }) => {
+            console.log('FFmpeg:', message);
+          });
+          
+          ffmpeg.on('progress', ({ progress }) => {
+            const percent = Math.round(progress * 100);
+            showMessage(`Converting: ${percent}%`, 'success');
+          });
+        }
         
-        // Set up logging
-        ffmpeg.on('log', ({ message }) => {
-          console.log('FFmpeg:', message);
-        });
-        
-        // Show progress
-        ffmpeg.on('progress', ({ progress }) => {
-          const percent = Math.round(progress * 100);
-          showMessage(`Converting: ${percent}%`, 'success');
-        });
-        
-        // Load FFmpeg with CDN core path
+        // Load FFmpeg core from local extension assets (CSP-safe)
         console.log('Loading FFmpeg...');
         try {
+          const coreBase = chrome.runtime.getURL('vendor/ffmpeg/');
           await ffmpeg.load({
-            coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
-            wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
+            coreURL: `${coreBase}ffmpeg-core.js`,
+            wasmURL: `${coreBase}ffmpeg-core.wasm`,
           });
         } catch (loadError) {
-          // Try loading without explicit paths (may work if bundled)
-          console.log('Trying to load FFmpeg without explicit paths...');
-          await ffmpeg.load();
+          throw new Error(`FFmpeg local core load failed: ${loadError.message || loadError}`);
         }
         console.log('FFmpeg loaded');
         
@@ -1851,31 +1915,47 @@ async function handleLoadVideo() {
         console.log('Writing input file...');
         await ffmpeg.writeFile('input.mov', bytes);
         
-        // Convert to WebM (best browser support)
-        console.log('Converting to WebM...');
-        await ffmpeg.exec([
-          '-i', 'input.mov',
-          '-c:v', 'libvpx-vp9',
-          '-c:a', 'libopus',
-          '-b:v', '2M',
-          '-b:a', '128k',
-          '-threads', '4',
-          '-speed', '4',
-          'output.webm'
-        ]);
+        // Try a low-memory remux first (container change only, no re-encode)
+        console.log('Attempting MOV -> MP4 remux...');
+        let outputFile = 'output.mp4';
+        let outputMime = 'video/mp4';
+        let convertedLabel = 'video/mp4 (remuxed from MOV)';
+        
+        try {
+          await ffmpeg.exec([
+            '-i', 'input.mov',
+            '-c', 'copy',
+            '-movflags', '+faststart',
+            outputFile
+          ]);
+        } catch (remuxError) {
+          console.warn('Remux failed, trying lightweight transcode:', remuxError);
+          // Fallback transcode tuned for lower memory usage than VP9/WebM
+          await ffmpeg.exec([
+            '-i', 'input.mov',
+            '-vf', 'scale=min(960,iw):-2',
+            '-c:v', 'mpeg4',
+            '-q:v', '8',
+            '-c:a', 'aac',
+            '-b:a', '96k',
+            '-threads', '1',
+            outputFile
+          ]);
+          convertedLabel = 'video/mp4 (transcoded from MOV)';
+        }
         
         // Read output file
         console.log('Reading converted file...');
-        const outputData = await ffmpeg.readFile('output.webm');
+        const outputData = await ffmpeg.readFile(outputFile);
         
         // Create blob from converted video
-        const blob = new Blob([outputData], { type: 'video/webm' });
+        const blob = new Blob([outputData], { type: outputMime });
         blobUrl = URL.createObjectURL(blob);
-        convertedType = 'video/webm (converted from MOV)';
+        convertedType = convertedLabel;
         
         // Clean up
         await ffmpeg.deleteFile('input.mov');
-        await ffmpeg.deleteFile('output.webm');
+        await ffmpeg.deleteFile(outputFile);
         
           console.log('Conversion successful');
           showMessage('Conversion complete! Video ready to play.', 'success');
@@ -1897,6 +1977,7 @@ async function handleLoadVideo() {
               videoError.style.display = 'block';
             }
           }, 2000);
+        }
         }
       }
     } else {

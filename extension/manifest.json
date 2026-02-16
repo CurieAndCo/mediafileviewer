@@ -9,7 +9,8 @@
     "tabs"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "https://www.justice.gov/epstein/files",
+    "https://www.justice.gov/epstein/files/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -22,9 +23,12 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": ["https://www.justice.gov/epstein/files", "https://www.justice.gov/epstein/files/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
