@@ -1,7 +1,9 @@
 // Background service worker for File Type Detector Extension
 // Author: mia
-const ALLOWED_DATASET_HOST = 'www.justice.gov';
-const ALLOWED_DATASET_PATH_PREFIX = '/epstein/files';
+const ALLOWED_DATASET_SCOPES = [
+  { host: 'www.justice.gov', pathPrefix: '/epstein/files' },
+  { host: 'assets.getkino.com', pathPrefix: '/documents' }
+];
 
 // Service worker for Manifest V3
 chrome.runtime.onInstalled.addListener(() => {
@@ -21,7 +23,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
           throw new Error('Blocked unsupported URL protocol');
         }
-        if (targetUrl.hostname !== ALLOWED_DATASET_HOST || !targetUrl.pathname.startsWith(ALLOWED_DATASET_PATH_PREFIX)) {
+        const isAllowedScope = ALLOWED_DATASET_SCOPES.some(
+          ({ host, pathPrefix }) => targetUrl.hostname === host && targetUrl.pathname.startsWith(pathPrefix)
+        );
+        if (!isAllowedScope) {
           throw new Error('Blocked URL outside allowed dataset scope');
         }
 

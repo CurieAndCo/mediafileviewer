@@ -1,8 +1,10 @@
 // Content script for File Type Detector Extension
 // Author: @helloitsmia.tech
 // This script runs in the page context to fetch files that may be behind age verification
-const ALLOWED_DATASET_HOST = 'www.justice.gov';
-const ALLOWED_DATASET_PATH_PREFIX = '/epstein/files';
+const ALLOWED_DATASET_SCOPES = [
+  { host: 'www.justice.gov', pathPrefix: '/epstein/files' },
+  { host: 'assets.getkino.com', pathPrefix: '/documents' }
+];
 
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -18,7 +20,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ success: false, error: 'Blocked unsupported URL protocol' });
         return false;
       }
-      if (targetUrl.hostname !== ALLOWED_DATASET_HOST || !targetUrl.pathname.startsWith(ALLOWED_DATASET_PATH_PREFIX)) {
+      const isAllowedScope = ALLOWED_DATASET_SCOPES.some(
+        ({ host, pathPrefix }) => targetUrl.hostname === host && targetUrl.pathname.startsWith(pathPrefix)
+      );
+      if (!isAllowedScope) {
         sendResponse({ success: false, error: 'Blocked URL outside allowed dataset scope' });
         return false;
       }

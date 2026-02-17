@@ -10,7 +10,9 @@
   ],
   "host_permissions": [
     "https://www.justice.gov/epstein/files",
-    "https://www.justice.gov/epstein/files/*"
+    "https://www.justice.gov/epstein/files/*",
+    "https://assets.getkino.com/documents/",
+    "https://assets.getkino.com/documents/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -28,7 +30,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.justice.gov/epstein/files", "https://www.justice.gov/epstein/files/*"],
+      "matches": [
+        "https://www.justice.gov/epstein/files",
+        "https://www.justice.gov/epstein/files/*",
+        "https://assets.getkino.com/documents/",
+        "https://assets.getkino.com/documents/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

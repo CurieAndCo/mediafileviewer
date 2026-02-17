@@ -44,8 +44,10 @@ let detectedExtensionHint = null; // Extension verified during alternative URL p
 let statusCode = null;
 let fileSize = null;
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
-const ALLOWED_DATASET_HOST = 'www.justice.gov';
-const ALLOWED_DATASET_PATH_PREFIX = '/epstein/files';
+const ALLOWED_DATASET_SCOPES = [
+  { host: 'www.justice.gov', pathPrefix: '/epstein/files' },
+  { host: 'assets.getkino.com', pathPrefix: '/documents' }
+];
 
 // DOM elements
 const detectBtn = document.getElementById('detectBtn');
@@ -97,8 +99,10 @@ function getSafeHttpUrl(url) {
   try {
     const parsed = new URL(url);
     if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) return null;
-    if (parsed.hostname !== ALLOWED_DATASET_HOST) return null;
-    if (!parsed.pathname.startsWith(ALLOWED_DATASET_PATH_PREFIX)) return null;
+    const isAllowedScope = ALLOWED_DATASET_SCOPES.some(
+      ({ host, pathPrefix }) => parsed.hostname === host && parsed.pathname.startsWith(pathPrefix)
+    );
+    if (!isAllowedScope) return null;
     return parsed;
   } catch (e) {
     return null;
@@ -113,7 +117,7 @@ async function loadCurrentTabUrl() {
       const extractedUrl = extractRealUrl(tab.url);
       const safeUrl = getSafeHttpUrl(extractedUrl);
       if (!safeUrl) {
-        currentUrlText.textContent = 'This tool only works on justice.gov/epstein/files';
+        currentUrlText.textContent = 'Only supported on justice.gov/epstein/files and assets.getkino.com/documents';
         currentUrlText.title = extractedUrl;
         detectBtn.disabled = true;
         return;
@@ -188,7 +192,7 @@ async function handleDetect() {
     let url = extractRealUrl(tab.url);
     const safeUrl = getSafeHttpUrl(url);
     if (!safeUrl) {
-      showMessage('This tool is restricted to https://www.justice.gov/epstein/files', 'error');
+      showMessage('This tool is restricted to justice.gov/epstein/files and assets.getkino.com/documents', 'error');
       return;
     }
     url = safeUrl.toString();
@@ -886,7 +890,7 @@ async function handleScanMetadata() {
     }
     const safeScanUrl = getSafeHttpUrl(urlToScan);
     if (!safeScanUrl) {
-      showMessage('Metadata scan is restricted to https://www.justice.gov/epstein/files', 'error');
+      showMessage('Metadata scan is restricted to justice.gov/epstein/files and assets.getkino.com/documents', 'error');
       return;
     }
     urlToScan = safeScanUrl.toString();
@@ -1783,7 +1787,7 @@ async function handleLoadVideo() {
 
   const safeUrl = getSafeHttpUrl(url);
   if (!safeUrl) {
-    showMessage('Video preview is restricted to https://www.justice.gov/epstein/files', 'error');
+    showMessage('Video preview is restricted to justice.gov/epstein/files and assets.getkino.com/documents', 'error');
     return;
   }
   url = safeUrl.toString();
